@@ -9,7 +9,8 @@ import {
   Eye, EyeOff, StickyNote, Mic, MicOff, LayoutGrid, LayoutList, ArrowUp, ArrowDown,
   DollarSign, RefreshCw, Sparkles, Type, Target, Fingerprint, Pencil, RotateCcw, Eraser,
   Fuel, ShoppingCart, Zap, Car, Pill, HandCoins, Shirt, Wifi, Smartphone, Drama, Gift, Wrench,
-  Banknote, Building2, Droplets, Bus, CarTaxiFront, ConciergeBell, Minus, ChevronUp, Utensils
+  Banknote, Building2, Droplets, Bus, CarTaxiFront, ConciergeBell, Minus, ChevronUp, Utensils,
+  Clock, CheckCircle2, XCircle
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Sector, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -628,7 +629,7 @@ function ColorPie({ data, selected, onSelect }) {
         const mid = (s.a0 + s.a1) / 2;
         const isSel = selected === s.i;
         const [ox, oy] = isSel ? polarPt(0, 0, 9, mid) : [0, 0];
-        const Icon = categoryIconFor(s.name);
+        const Icon = s.icon || categoryIconFor(s.name);
         const [ix, iy] = polarPt(cx, cy, R * 0.63, mid);
         const arcLen = (s.span * Math.PI / 180) * R * 0.63;
         const size = Math.min(46, arcLen * 0.75);
@@ -1601,6 +1602,8 @@ export default function App() {
                 expenseByMember={expenseByMember} expenseByEvent={expenseByEvent} expenseByProject={expenseByProject}
                 categories={categories} checks={checks} currency={settings.currency} usdRate={rates?.usd}
                 transactions={transactions} updateAccount={updateAccount}
+                onEditTransaction={(tx) => { setPrefillTx({ ...tx, _editId: tx.id }); setShowAdd(true); }}
+                onDeleteTransaction={deleteTransaction} updateCategory={updateCategory} setChecks={setChecks}
               />
             )}
           </div>
@@ -2090,8 +2093,121 @@ function OperationsView({ setSubView, onAdd }) {
    Reports View
 --------------------------------------------------------- */
 const PIE_COLORS = ["#B01E4A", "#6C3FA0", "#4E9AA0", "#A98A3B", "#3E1461", "#1E8449", "#A65475", "#555"];
-function ReportsView({ categories = [], expenseByCategory, incomeByCategory, totalIncomeYear, totalExpenseYear, accounts, accountBalance, updateAccount, netWorthTrend, exportExcel, expenseByMember, expenseByEvent, expenseByProject, checks = [], currency, usdRate, transactions = [] }) {
+/* ---------------------------------------------------------
+   Reports — نمودارهای هم‌شکل نمودار صفحه‌ی خانه
+   لمس هر برش = کادر جزئیات کامل آن برش، همراه با ویرایش
+--------------------------------------------------------- */
+function ReportPie({ data, selectedKey, onOpen }) {
+  const t = useT();
+  const total = data.reduce((s, d) => s + d.amount, 0);
+  const idx = data.findIndex((d) => d.key === selectedKey);
+  if (!data.length || total <= 0) return <EmptyRow text="داده‌ای برای نمایش نیست" />;
+  return (
+    <div>
+      <div style={{ maxWidth: 270, margin: "4px auto 0" }}>
+        <ColorPie data={data} selected={idx >= 0 ? idx : null} onSelect={(i) => { const d = data[i != null ? i : idx]; if (d) onOpen(d); }} />
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 10 }}>
+        {data.map((d) => (
+          <button key={d.key} onClick={() => onOpen(d)} style={{ display: "flex", alignItems: "center", gap: 5, border: "none", background: t.inputBorder, borderRadius: 14, padding: "4px 10px", fontSize: 11.5, color: t.text, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+            <span style={{ width: 9, height: 9, borderRadius: "50%", background: d.color }} />
+            {d.name}
+            <span style={{ color: t.sub, fontWeight: 700 }}>{toFaInt(Math.round((d.amount / total) * 100))}٪</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const CHECK_STATUS_LABEL = { pending: "در جریان وصول", cashed: "وصول شده", bounced: "برگشت خورده" };
+
+function SliceSheet({ item, kind, total, txs = [], checkList = [], catNameOf, currency, usdRate, onClose, onEditTx, onDeleteTx, onRenameCategory, onSetCheckStatus }) {
+  const t = useT();
   const st = useStyles();
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(item.name);
+  const [confirmId, setConfirmId] = useState(null);
+  const Icon = item.icon || categoryIconFor(item.name);
+  const count = kind === "chk" ? checkList.length : txs.length;
+  const pct = total > 0 ? Math.round((item.amount / total) * 100) : 0;
+  const canRename = kind === "cat" && item.catIds && item.catIds.length === 1 && item.catIds[0];
+  const sortedTx = [...txs].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const iconBtn = { width: 30, height: 30, borderRadius: 8, border: "none", background: t.inputBorder, color: t.text, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, padding: 0 };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 400, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} dir="rtl" style={{ width: "min(480px,100vw)", maxHeight: "86vh", overflowY: "auto", background: t.card, color: t.text, borderRadius: "22px 22px 0 0", padding: 18, paddingBottom: "calc(20px + env(safe-area-inset-bottom,0px))", fontFamily: FONT }}>
+        {/* سربرگ */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+          <div style={{ width: 50, height: 50, borderRadius: 16, background: item.color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Icon size={26} color="#fff" strokeWidth={1.8} fill="#fff" fillOpacity={0.3} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {renaming ? (
+              <div style={{ display: "flex", gap: 6 }}>
+                <input value={draft} onChange={(e) => setDraft(e.target.value)} style={{ ...st.input, margin: 0, flex: 1, padding: "7px 10px" }} autoFocus />
+                <button onClick={() => { if (draft.trim()) { onRenameCategory?.(item.catIds[0], draft.trim()); } setRenaming(false); }} style={{ ...iconBtn, background: "#22A559", color: "#fff", width: 38 }}><Check size={16} /></button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontWeight: 800, fontSize: 17 }}>{item.name}</div>
+                {canRename && <button onClick={() => { setDraft(item.name); setRenaming(true); }} aria-label="ویرایش نام دسته" style={iconBtn}><Pencil size={14} /></button>}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: t.sub, marginTop: 2 }}>{kind === "chk" ? "چک‌ها" : kind === "cat" ? "دسته‌ی هزینه" : item.key === "income" ? "همه‌ی درآمدها" : "همه‌ی هزینه‌ها"}</div>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 24, fontWeight: 900, color: item.color, marginBottom: 12 }}>{formatMoney(item.amount, currency, usdRate)}</div>
+
+        {/* آمار */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 14 }}>
+          {[["سهم از کل", `${toFaInt(pct)}٪`], ["تعداد", toFaInt(count)], ["میانگین", count ? formatMoney(Math.round(item.amount / count), currency, usdRate) : "—"]].map(([l, v]) => (
+            <div key={l} style={{ background: t.inputBorder, borderRadius: 12, padding: "8px 6px", textAlign: "center" }}>
+              <div style={{ fontSize: 10.5, color: t.sub, fontWeight: 600 }}>{l}</div>
+              <div style={{ fontSize: 12.5, fontWeight: 800, marginTop: 3, wordBreak: "break-word" }}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* فهرست */}
+        {kind !== "chk" && sortedTx.map((x) => (
+          <div key={x.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderTop: `1px solid ${t.border}` }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{x.note || catNameOf(x.categoryId)}</div>
+              <div style={{ fontSize: 11, color: t.sub, marginTop: 2 }}>{faDayMonth(x.date)}{x.note ? ` · ${catNameOf(x.categoryId)}` : ""}</div>
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13, color: x.type === "income" ? "#22A559" : "#E5384B", whiteSpace: "nowrap" }}>{formatMoney(x.amount, currency, usdRate)}</div>
+            <button onClick={() => onEditTx?.(x)} aria-label="ویرایش تراکنش" style={{ ...iconBtn, color: BRAND.violet }}><Pencil size={14} /></button>
+            <button onClick={() => { if (confirmId === x.id) { onDeleteTx?.(x.id); setConfirmId(null); } else setConfirmId(x.id); }} aria-label="حذف تراکنش"
+              style={{ ...iconBtn, width: confirmId === x.id ? 52 : 30, background: confirmId === x.id ? "#E5384B" : t.inputBorder, color: confirmId === x.id ? "#fff" : "#E5384B", fontSize: 11, fontWeight: 800 }}>
+              {confirmId === x.id ? "حذف؟" : <Trash2 size={14} />}
+            </button>
+          </div>
+        ))}
+        {kind === "chk" && checkList.map((c) => (
+          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderTop: `1px solid ${t.border}` }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{c.payee || "بدون نام"}</div>
+              <div style={{ fontSize: 11, color: t.sub, marginTop: 2 }}>{c.type === "received" ? "دریافتی" : "پرداختی"}{c.dueDate ? ` · سررسید ${faDayMonth(c.dueDate)}` : ""}</div>
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: "nowrap" }}>{formatMoney(c.amount, currency, usdRate)}</div>
+            <select value={c.status} onChange={(e) => onSetCheckStatus?.(c.id, e.target.value)} style={{ fontSize: 11.5, borderRadius: 8, border: `1.5px solid ${t.inputBorder}`, background: t.input, color: t.text, padding: "5px 4px", fontFamily: "inherit" }}>
+              {Object.entries(CHECK_STATUS_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </div>
+        ))}
+        {count === 0 && <EmptyRow text="مورد دیگری در این بخش نیست" />}
+
+        <button onClick={onClose} style={{ ...st.primaryBtn, background: t.inputBorder, color: t.text, marginTop: 14 }}>بستن</button>
+      </div>
+    </div>
+  );
+}
+
+function ReportsView({ categories = [], expenseByCategory, incomeByCategory, totalIncomeYear, totalExpenseYear, accounts, accountBalance, updateAccount, netWorthTrend, exportExcel, expenseByMember, expenseByEvent, expenseByProject, checks = [], currency, usdRate, transactions = [], onEditTransaction, onDeleteTransaction, updateCategory, setChecks }) {
+  const st = useStyles();
+  const [sheet, setSheet] = useState(null); // { chart: "ie"|"cat"|"chk", key }
   const [period, setPeriod] = useState("year");
   const [selectedAccount, setSelectedAccount] = useState(null); const [editBalance, setEditBalance] = useState("");
   const periodTx = useMemo(() => {
@@ -2109,7 +2225,7 @@ function ReportsView({ categories = [], expenseByCategory, incomeByCategory, tot
     const map = {};
     periodTx.filter((x) => x.type === "expense").forEach((x) => { map[x.categoryId] = (map[x.categoryId] || 0) + x.amount; });
     return Object.entries(map).map(([catId, amount]) => ({ name: categories.find((c) => c.id === catId)?.name || "بدون دسته", amount, catId })).sort((a,b) => b.amount-a.amount);
-  }, [periodTx]);
+  }, [periodTx, categories]);
 
   const checkStats = useMemo(() => {
     const pending = checks.filter((c) => c.status === "pending").length;
@@ -2119,6 +2235,30 @@ function ReportsView({ categories = [], expenseByCategory, incomeByCategory, tot
     const pct = resolved > 0 ? (cashed / resolved) * 100 : 0;
     return { pending, cashed, bounced, pct };
   }, [checks]);
+
+  const catNameOf = (id) => categories.find((c) => c.id === id)?.name || "بدون دسته";
+  const ieData = [
+    { key: "income", name: "درآمد", amount: reportIncome, color: "#96C852", icon: TrendingUp },
+    { key: "expense", name: "هزینه", amount: reportExpense, color: "#F5503F", icon: TrendingDown },
+  ].filter((d) => d.amount > 0);
+  const catData = (() => {
+    let all = reportExpenseByCategory.map((d) => ({ key: String(d.catId || "none"), name: d.name, amount: d.amount, catIds: [d.catId] }));
+    if (all.length > 8) {
+      const rest = all.slice(7);
+      all = [...all.slice(0, 7), { key: "others", name: "سایر", amount: rest.reduce((x, d) => x + d.amount, 0), catIds: rest.flatMap((d) => d.catIds), icon: Sparkles }];
+    }
+    return all.map((d, i) => ({ ...d, color: CHART_COLORS[i % CHART_COLORS.length] }));
+  })();
+  const chkSum = (stt) => checks.filter((c) => c.status === stt).reduce((x, c) => x + Number(c.amount || 0), 0);
+  const chkData = [
+    { key: "pending", name: "در جریان وصول", amount: chkSum("pending"), color: "#F59E0B", icon: Clock },
+    { key: "cashed", name: "وصول شده", amount: chkSum("cashed"), color: "#22A559", icon: CheckCircle2 },
+    { key: "bounced", name: "برگشت خورده", amount: chkSum("bounced"), color: "#E5384B", icon: XCircle },
+  ].filter((d) => d.amount > 0);
+  const sheetItem = sheet ? ({ ie: ieData, cat: catData, chk: chkData }[sheet.chart] || []).find((d) => d.key === sheet.key) : null;
+  const sheetTxs = !sheetItem ? [] : sheet.chart === "ie" ? periodTx.filter((x) => x.type === sheetItem.key)
+    : sheet.chart === "cat" ? periodTx.filter((x) => x.type === "expense" && sheetItem.catIds.includes(x.categoryId)) : [];
+  const sheetTotal = sheet?.chart === "ie" ? reportIncome + reportExpense : sheet?.chart === "cat" ? reportExpense : chkData.reduce((x, d) => x + d.amount, 0);
 
   return (
     <div style={{ padding: "16px" }}>
@@ -2160,12 +2300,12 @@ function ReportsView({ categories = [], expenseByCategory, incomeByCategory, tot
 
       <SectionTitle text="درآمد و هزینه" />
       <div style={{ ...st.card, padding: 12, marginBottom: 18 }}>
-        <ExplodingPie data={incomeExpensePie} currency={currency} usdRate={usdRate} />
+        <ReportPie data={ieData} selectedKey={sheet?.chart === "ie" ? sheet.key : null} onOpen={(d) => setSheet({ chart: "ie", key: d.key })} />
       </div>
 
       <SectionTitle text="توزیع هزینه‌ها بر اساس دسته" />
       <div style={{ ...st.card, padding: 12, marginBottom: 18 }}>
-        <ExplodingPie data={reportExpenseByCategory} currency={currency} usdRate={usdRate} />
+        <ReportPie data={catData} selectedKey={sheet?.chart === "cat" ? sheet.key : null} onOpen={(d) => setSheet({ chart: "cat", key: d.key })} />
       </div>
 
       <SectionTitle text="گزارش چک‌ها" />
@@ -2184,9 +2324,10 @@ function ReportsView({ categories = [], expenseByCategory, incomeByCategory, tot
             <div style={{ fontSize: 11.5, color: "#8a8194" }}>برگشت خورده</div>
           </div>
         </div>
+        {chkData.length > 0 && <ReportPie data={chkData} selectedKey={sheet?.chart === "chk" ? sheet.key : null} onOpen={(d) => setSheet({ chart: "chk", key: d.key })} />}
         {(checkStats.cashed + checkStats.bounced) > 0 && (
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <GaugeSpeedometer pct={checkStats.pct} label="نسبت چک‌های وصول‌شده به کل تسویه‌شده‌ها" />
+          <div style={{ textAlign: "center", fontSize: 11.5, color: "#8a8194", marginTop: 10 }}>
+            نسبت چک‌های وصول‌شده به کل تسویه‌شده‌ها: {toFaInt(Math.round(checkStats.pct))}٪
           </div>
         )}
         {checks.length === 0 && <EmptyRow text="چکی ثبت نشده" />}
@@ -2220,6 +2361,14 @@ function ReportsView({ categories = [], expenseByCategory, incomeByCategory, tot
             {expenseByProject.map((m) => <Row key={m.id} title={m.name} value={formatMoney(m.amount, currency, usdRate)} valueColor={BRAND.crimson} chevron={null} />)}
           </div>
         </>
+      )}
+      {sheetItem && (
+        <SliceSheet item={sheetItem} kind={sheet.chart} total={sheetTotal} txs={sheetTxs} checkList={sheet.chart === "chk" ? checks.filter((c) => c.status === sheetItem.key) : []}
+          catNameOf={catNameOf} currency={currency} usdRate={usdRate} onClose={() => setSheet(null)}
+          onEditTx={(tx) => { setSheet(null); onEditTransaction?.(tx); }}
+          onDeleteTx={(id) => onDeleteTransaction?.(id)}
+          onRenameCategory={(id, name) => updateCategory?.(id, { name })}
+          onSetCheckStatus={(id, status) => setChecks?.((p) => p.map((x) => x.id === id ? { ...x, status } : x))} />
       )}
       {selectedAccount && <div onClick={() => setSelectedAccount(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 300, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
         <div onClick={(e) => e.stopPropagation()} style={{ width: "min(480px,100vw)", background: "#fff", borderRadius: "18px 18px 0 0", padding: 18, paddingBottom: "calc(24px + env(safe-area-inset-bottom,0px))" }}>
